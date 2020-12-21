@@ -1,0 +1,46 @@
+#!/usr/bin/sh
+######################################################################################
+#Name:          tunneler_ssh.sh
+#Created on,by: 30th Jun 2015, Ram
+#Updated:       30th Jun 2015
+#Description:   Create a SSH session and keep it open
+#               Please use it at your own risk.
+#Author:        Ram
+######################################################################################
+output="$(ps aux|grep ssh|grep ExitOnForwardFailure|grep tunneler_r|grep {{ hostvars['localhost']['from_p']  }})"
+date_time="$(date)"
+prefix="persistentssh_log_"
+filedate=$(date +"%d-%b-%y")
+filename=$prefix$filedate
+
+if [ -n "$output" ];
+then
+{% if hostvars['localhost']['log_level']|int == 2 %}
+{%raw%}        echo $date_time "SSH Exists $output">>~tunneler_r/logs/$filename
+{%endraw%}{% else %}
+{%raw%}        echo $date_time "SSH Exists $output">>/dev/null
+{%endraw%}{% endif %}
+else
+{% if hostvars['localhost']['log_level']|int == 2 or hostvars['localhost']['log_level']|int == 1 %}
+{%raw%}        echo $date_time "Session does not exist">>~tunneler_r/logs/$filename
+{%endraw%}{% else %}
+{%raw%}        echo $date_time "Session does not exist">>/dev/null
+{%endraw%}{% endif %}
+        ssh_cmd="ssh -fN -o ExitOnForwardFailure=yes -F ~tunneler_r/.ssh/config -L {{ hostvars['localhost']['from_p']  }}:127.0.0.1:{{ hostvars['localhost']['to_p']  }} tunneler_r@{{ hostvars['localhost']['to_s']  }}"
+{% if "Mac" in ansible_distribution  %}
+{%raw%}        sh -c "$ssh_cmd"
+{%endraw%}{% else %}
+{%raw%}        su tunneler_r sh -c "$ssh_cmd"
+{%endraw%}{% endif %}
+{% if hostvars['localhost']['log_level']|int == 2 or hostvars['localhost']['log_level']|int == 1 %}
+{%raw%}        echo $date_time "Session Established">>~tunneler_r/logs/$filename{%endraw%}
+{% else %}
+{%raw%}        echo $date_time "Session Established">>/dev/null{%endraw%}
+{% endif %}
+
+fi
+exit
+# example: ssh_cmd="ssh -fN -o ExitOnForwardFailure=yes -i ~tunneler_r/.ssh/id_rsa_<server> -L 6100:127.0.0.1:3306 tunneler_r@hostname.domain"
+# example(with key): ssh_cmd="ssh -fN -o ExitOnForwardFailure=yes -i ~tunneler_r/.ssh/id_rsa_<server> -L 6100:127.0.0.1:3306 tunneler_r@hostname.domain"
+
+

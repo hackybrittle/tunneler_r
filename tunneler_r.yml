@@ -1,0 +1,210 @@
+---
+- hosts: localhost
+  gather_facts: no
+  vars_prompt:
+    - name: "from_server"
+      prompt: "Enter the DNS name OR IPv4 of the system FROM which you want to create a tunnel:\nDNS/IPv4"
+      private: "no"
+    - name: "from_port"
+      prompt: "Enter the port number FROM which you want to connect from:\nPort number"
+      private: "no"
+    - name: "from_user"
+      prompt: "Enter the Login User name on FROM machine\nUsername on FROM"
+      private: "no"
+    - name: "to_server"
+      prompt: "\nEnter the DNS name OR IPv4 of the system TO which you want to create a tunnel:\nDNS/IPv4"
+      private: "no"
+    - name: "to_port"
+      prompt: "Enter the port number TO which you want to connect to:\nPort number"
+      private: "no"
+    - name: "to_user"
+      prompt: "Enter the Login User name on TO machine\nUsername on TO"
+      private: "no"
+    - name: "log_no"
+      prompt: "\nLog - Please make sure you you have enough disk space for loggging\nLogs are stored in ~tunneler_r/logs/\n0 - Disable Logging\n1 - Log only ssh connection establish events\n2 - Log all events\nEnter a number (0 to 2)"
+      private: "no"
+
+  tasks:
+    - add_host:
+        name: "{{ from_server | trim }}"
+        groups: from_host
+    - add_host:
+        name: "{{ to_server | trim }}"
+        groups: to_host
+    - set_fact:
+        from_s: "{{ from_server | trim }}"
+        to_s: "{{ to_server | trim }}"
+        from_p: "{{ from_port | trim }}"
+        to_p: "{{ to_port | trim }}"
+        script_name: tunneler_ssh_{{ from_server | trim }}_{{ from_port | trim }}-{{ to_server | trim }}_{{ to_port | trim }}.ssh
+        log_level: "{{ log_no | trim | int }}"
+        from_u: "{{ from_user | trim }}"
+        to_u: "{{ to_user | trim }}"
+
+- hosts: from_host
+  gather_facts: yes
+  vars_prompt:
+    - name: "ansible_become_pass"
+      prompt: "Sudo password for {{ hostvars['localhost']['from_s'] }} "
+      private: "yes"
+  vars:
+    ansible_user: "{{ hostvars['localhost']['from_u'] }}"
+
+  tasks:     
+    - name: Create tunneler_r group
+      group:
+        name: tunneler_r
+        state: present
+      become: yes
+
+    - name: Create tunneler_r user
+      user:
+        name: tunneler_r
+        group: tunneler_r
+        groups: ''
+        shell: /bin/bash
+      become: yes
+    
+    - name: cd into the tunneler_r and create .ssh directory
+      file: 
+        path:  "{{ item }}"
+        state: directory
+        mode: '770'
+        owner: "{% if 'Mac' in ansible_distribution  %}{{ hostvars['localhost']['from_u'] }}{% else %}tunneler_r{% endif %}"
+        group: tunneler_r
+      loop: 
+        - ~tunneler_r/.ssh  
+        - ~tunneler_r/logs
+      become: yes
+    
+    - name: cd into the tunneler_r/.ssh and create config file
+      file: 
+        path: ~tunneler_r/.ssh/config
+        state: touch
+        mode: '644'
+        owner: "{% if 'Mac' in ansible_distribution  %}{{ hostvars['localhost']['from_u'] }}{% else %}tunneler_r{% endif %}"
+        group: tunneler_r 
+      become: yes
+ 
+    - name: Add contents to config file
+      blockinfile:
+          path: ~tunneler_r/.ssh/config
+          marker: "#{{ hostvars['localhost']['to_s'] }}"
+          block: |
+            host {{ hostvars['localhost']['to_s'] }}
+              identityfile ~tunneler_r/.ssh/id_rsa_{{ hostvars['localhost']['from_s'] }}
+          state: present
+      become: yes 
+
+    - name: Generate an OpenSSH rsa keypair with a different size (2048 bits)
+      community.crypto.openssh_keypair:
+        path: ~tunneler_r/.ssh/id_rsa_{{ hostvars['localhost']['from_s'] }}
+        size: 2048
+        owner: "{% if 'Mac' in ansible_distribution  %}{{ hostvars['localhost']['from_u'] }}{% else %}tunneler_r{% endif %}"
+        group: tunneler_r
+        mode: '600'
+      become: yes
+  
+    - name: Create the tunneler script
+      template:
+          src: tunneler_ssh.j2
+          dest: ~tunneler_r/{{ hostvars['localhost']['script_name'] }}
+          owner: "{% if 'Mac' in ansible_distribution  %}{{ hostvars['localhost']['from_u'] }}{% else %}root{% endif %}"
+          group: "{% if 'Mac' in ansible_distribution  %}tunneler_r{% else %}root{% endif %}"
+          mode: '0755'
+          backup: yes
+      become: yes
+      tags: script
+
+    - name: Creates an entry for ssh"
+      cron:
+        name: "A job for ssh {{ hostvars['localhost']['script_name'] }}"
+        job: "sh ~tunneler_r/{{ hostvars['localhost']['script_name'] }}"
+        user: "{% if 'Mac' in ansible_distribution  %}{{ hostvars['localhost']['from_u'] }}{% else %}root{% endif %}"
+        minute: "*/5"
+        backup: yes
+      become: yes
+    
+    - set_fact:
+        from_pass: "{{ ansible_become_pass }}" 
+
+- hosts: to_host
+  gather_facts: no
+  vars_prompt:
+    - name: "ansible_become_pass"
+      prompt: "Sudo password for {{ hostvars['localhost']['to_s'] }}"
+      private: "yes"
+  vars:
+    ansible_user: "{{ hostvars['localhost']['to_u'] }}"
+  become: yes
+
+  tasks:
+    - name: Create tunneler_r group
+      group:
+        name: tunneler_r
+        state: present
+      become: yes
+
+    - name: Create tunneler_r user
+      user:
+        name: tunneler_r
+        group: tunneler_r
+        groups: ''
+        shell: /bin/bash
+
+    - set_fact:
+        path_to_pub: "~tunneler_r/.ssh/id_rsa_{{ hostvars['localhost']['from_s'] }}.pub"
+        
+    - name: cd into the tunneler_r and create .ssh directory
+      file: 
+        path:  "{{ item }}"
+        state: directory
+        mode: '770'
+        owner: tunneler_r
+        group: tunneler_r
+      loop: 
+        - ~tunneler_r/.ssh  
+
+    - name: cd into the tunneler_r/.ssh and create authorized_keys file
+      file: 
+        path: ~tunneler_r/.ssh/authorized_keys
+        state: touch
+        mode: '600'
+        owner: tunneler_r
+        group: tunneler_r
+      
+    # executes in from
+    - name: Get the contents of the .pub key in local/from machine
+      command: "cat {{ path_to_pub }}"
+      register: key
+      vars:
+        ansible_user: "{{ hostvars['localhost']['from_u'] }}"
+        ansible_become_pass: "{{ hostvars[hostvars['localhost']['from_s']]['from_pass'] }}"
+      delegate_to: "{{ hostvars['localhost']['from_s'] }}"
+
+    - name: Copy the pub key contents to authorized_keys file in remote/to machine 
+      authorized_key:
+        user: tunneler_r
+        exclusive: no
+        state: present 
+        key: "{{ key.stdout }}"
+    
+    - name: Get the server host key 
+      shell: "ssh-keyscan {{ hostvars['localhost']['to_s'] }}"
+      register: key_contents
+
+    # executes in from
+    - name: Paste the server host key in the known_hosts file in local/from machine
+      lineinfile:
+        dest: ~tunneler_r/.ssh/known_hosts
+        create: yes
+        state: present
+        line: "{{ key_contents.stdout }}"
+        owner: "{% if 'Mac' in hostvars[hostvars['localhost']['from_s']]['ansible_distribution']  %}{{ hostvars['localhost']['from_u'] }}{% else %}tunneler_r{% endif %}"
+        group: tunneler_r
+      vars:
+        ansible_user: "{{ hostvars['localhost']['from_u'] }}"
+        ansible_become_pass: "{{ hostvars[hostvars['localhost']['from_s']]['from_pass'] }}"
+      delegate_to: "{{ hostvars['localhost']['from_s'] }}"
+
+...
